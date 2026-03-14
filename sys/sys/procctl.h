@@ -67,6 +67,7 @@
 #define	PROC_WXMAP_STATUS	22	/* query W^X */
 #define	PROC_LOGSIGEXIT_CTL	23	/* en/dis logging on sigexit */
 #define	PROC_LOGSIGEXIT_STATUS	24	/* query logging on sigexit */
+#define PROC_REAP_STATUS_EX	25	/* extend reaping/workload status */
 
 /* Operations for PROC_SPROTECT (passed in integer arg). */
 #define	PPROT_OP(x)	((x) & 0xf)
@@ -91,6 +92,23 @@ struct procctl_reaper_status {
 /* struct procctl_reaper_status rs_flags */
 #define	REAPER_STATUS_OWNED	0x00000001
 #define	REAPER_STATUS_REALINIT	0x00000002
+
+struct procctl_reaper_status_ex {
+	u_int   rsx_flags;
+	pid_t   rsx_pid;          /* queried process */
+	pid_t   rsx_reaper;       /* owning reaper */
+	pid_t   rsx_subtree;      /* direct child pid under reaper */
+	pid_t   rsx_realparent;   /* real parent pid */
+	u_int   rsx_descendants;  /* valid if queried process is reaper */
+	u_int   rsx_children;     /* valid if queried process is reaper */
+	u_int   rsx_pad0[10];
+};
+
+#define REAPER_STATUS_EX_OWNED         0x00000001
+#define REAPER_STATUS_EX_REALINIT      0x00000002
+#define REAPER_STATUS_EX_DIRECT_CHILD  0x00000004
+#define REAPER_STATUS_EX_REAPER        0x00000008
+
 
 struct procctl_reaper_pidinfo {
 	pid_t	pi_pid;

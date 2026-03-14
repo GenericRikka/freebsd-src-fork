@@ -200,6 +200,46 @@ reap_status(struct thread *td, struct proc *p, void *data)
 }
 
 static int
+reap_status_ex(struct thread *td, struct proc *p, void *data)
+{
+	struct proc *reap, *p2;
+	struct procctl_reaper_status_ex *rsx;
+
+	rsx = data;
+	sx_assert(&proctree_lock, SX_LOCKED);
+
+	bzero(rsx, sizeof(*rsx));
+	rsx->rsx_pid = p->p_pid;
+	rsx->rsx_realparent = proc_realparent(p)->p_pid;
+
+	if ((p->p_treeflag & P_TREE_REAPER) != 0) {
+		reap = p;
+		rsx->rsx_flags |= REAPER_STATUS_EX_OWNED |
+		    REAPER_STATUS_EX_REAPER;
+	} else {
+		reap = p->p_reaper;
+	}
+
+	if (reap == initproc)
+		rsx->rsx_flags |= REAPER_STATUS_EX_REALINIT;
+
+	rsx->rsx_reaper = reap->p_pid;
+	rsx->rsx_subtree = p->p_reapsubtree;
+
+	if (proc_realparent(p) == reap)
+		rsx->rsx_flags |= REAPER_STATUS_EX_DIRECT_CHILD;
+
+	if ((p->p_treeflag & P_TREE_REAPER) != 0) {
+		LIST_FOREACH(p2, &p->p_reaplist, p_reapsibling) {
+			if (proc_realparent(p2) == p)
+				rsx->rsx_children++;
+			rsx->rsx_descendants++;
+		}
+	}
+	return (0);
+}
+
+static int
 reap_getpids(struct thread *td, struct proc *p, void *data)
 {
 	struct proc *reap, *p2;
@@ -1008,6 +1048,13 @@ static const struct procctl_cmd_info procctl_cmds_info[] = {
 	      .copyin_sz = 0,
 	      .copyout_sz = sizeof(struct procctl_reaper_status),
 	      .exec = reap_status, .copyout_on_error = false, },
+	[PROC_REAP_STATUS_EX] =
+	    { .lock_tree = PCTL_SLOCKED, .one_proc = true,
+	      .esrch_is_einval = false, .no_nonnull_data = false,
+	      .need_candebug = false,
+	      .copyin_sz = 0,
+	      .copyout_sz = sizeof(struct procctl_reaper_status_ex),
+	      .exec = reap_status_ex, .copyout_on_error = false, },
 	[PROC_REAP_GETPIDS] =
 	    { .lock_tree = PCTL_SLOCKED, .one_proc = true,
 	      .esrch_is_einval = false, .no_nonnull_data = false,

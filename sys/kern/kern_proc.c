@@ -1203,6 +1203,13 @@ fill_kinfo_proc_pgrp(struct proc *p, struct kinfo_proc *kp)
 	sx_assert(&proctree_lock, SA_LOCKED);
 	PROC_LOCK_ASSERT(p, MA_OWNED);
 
+	/*
+	 * Export raw reaper metadata so userland can reconstruct reaper
+	 * ownership and subtree membership from kern.proc snapshots.
+	 */
+	kp->ki_reaper = p->p_reaper != NULL ? p->p_reaper->p_pid : 0;
+	kp->ki_reapsubtree = p->p_reapsubtree;
+
 	pgrp = p->p_pgrp;
 	if (pgrp == NULL)
 		return;
@@ -1437,6 +1444,8 @@ freebsd32_kinfo_proc_out(const struct kinfo_proc *ki, struct kinfo_proc32 *ki32)
 	CP(*ki, *ki32, ki_sid);
 	CP(*ki, *ki32, ki_tsid);
 	CP(*ki, *ki32, ki_jobc);
+	CP(*ki, *ki32, ki_reaper);
+	CP(*ki, *ki32, ki_reapsubtree);
 	FU64_CP(*ki, *ki32, ki_tdev);
 	CP(*ki, *ki32, ki_tdev_freebsd11);
 	CP(*ki, *ki32, ki_siglist);

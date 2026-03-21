@@ -260,6 +260,16 @@ kvm_proclist(kvm_t *kd, int what, int arg, struct proc *p,
 			kp->ki_ppid = pproc.p_pid;
 		} else
 			kp->ki_ppid = 0;
+		if (proc.p_reaper != NULL) {
+			if (KREAD(kd, (u_long)proc.p_reaper, &pproc)) {
+				_kvm_err(kd, kd->program,
+				    "can't read reaper proc at %p", proc.p_reaper);
+				return (-1);
+			}
+			kp->ki_reaper = pproc.p_pid;
+		} else
+			kp->ki_reaper = 0;
+		kp->ki_reapsubtree = proc.p_reapsubtree;
 		if (proc.p_pgrp == NULL)
 			goto nopgrp;
 		if (KREAD(kd, (u_long)proc.p_pgrp, &pgrp)) {

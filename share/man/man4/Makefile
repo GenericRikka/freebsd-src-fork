@@ -44,6 +44,7 @@ MAN=	aac.4 \
 	alc.4 \
 	ale.4 \
 	alpm.4 \
+	appleir.4 \
 	altq.4 \
 	amdpm.4 \
 	${_amdsbwd.4} \
@@ -187,6 +188,7 @@ MAN=	aac.4 \
 	gem.4 \
 	genet.4 \
 	genetlink.4 \
+	geneve.4 \
 	geom.4 \
 	geom_linux_lvm.4 \
 	geom_uzip.4 \
@@ -428,6 +430,7 @@ MAN=	aac.4 \
 	ng_vjc.4 \
 	ng_vlan.4 \
 	ng_vlan_rotate.4 \
+	nlsysevent.4 \
 	nmdm.4 \
 	${_ntb.4} \
 	${_ntb_hw_amd.4} \
@@ -624,6 +627,7 @@ MAN=	aac.4 \
 	virtio_random.4 \
 	virtio_scsi.4 \
 	${_vmci.4} \
+	vmgenc.4 \
 	vkbd.4 \
 	vlan.4 \
 	vxlan.4 \
@@ -726,6 +730,7 @@ MLINKS+=fwip.4 if_fwip.4
 MLINKS+=fxp.4 if_fxp.4
 MLINKS+=gem.4 if_gem.4
 MLINKS+=genet.4 if_genet.4
+MLINKS+=geneve.4 if_geneve.4
 MLINKS+=geom.4 GEOM.4
 MLINKS+=gif.4 if_gif.4
 MLINKS+=gpio.4 gpiobus.4
@@ -1054,11 +1059,11 @@ MAN+=		mlx5io.4
 .endif
 
 .if ${MK_TESTS} != "no"
-MANGROUPS+=	TESTS
-ATF=            ${SRCTOP}/contrib/atf
-.PATH:          ${ATF}/doc
-TESTS=		atf-test-case.4
-TESTSPACKAGE=	tests
+MANGROUPS+=	ATF
+ATFTOP=		${SRCTOP}/contrib/atf
+.PATH:          ${ATFTOP}/doc
+ATF=		atf-test-case.4
+ATFPACKAGE=	atf
 .endif
 
 .if ${MK_PF} != "no"

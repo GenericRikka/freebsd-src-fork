@@ -73,7 +73,6 @@ __DEFAULT_YES_OPTIONS = \
     BOOTPD \
     BSDINSTALL \
     BSNMP \
-    BZIP2 \
     CALENDAR \
     CAROOT \
     CCD \
@@ -207,7 +206,6 @@ __DEFAULT_NO_OPTIONS = \
     DISK_IMAGE_TOOLS_BOOTSTRAP \
     DTRACE_ASAN \
     DTRACE_TESTS \
-    EXPERIMENTAL \
     HESIOD \
     IPFILTER_IPFS \
     LOADER_VERBOSE \
@@ -246,7 +244,6 @@ __LIBC_MALLOC_DEFAULT=	jemalloc
 .for var in \
     BLACKLIST \
     BLOCKLIST \
-    BZIP2 \
     INET \
     INET6 \
     KERBEROS \
@@ -407,6 +404,14 @@ MK_BLOCKLIST:=	no
 MK_BLOCKLIST_SUPPORT:=	no
 .endif
 
+.if ${MK_BLOCKLIST} == "no"
+MK_BLACKLIST:=	no
+.endif
+
+.if ${MK_BLOCKLIST_SUPPORT} == "no"
+MK_BLACKLIST_SUPPORT:=	no
+.endif
+
 .if ${MK_CDDL} == "no"
 MK_CTF:=	no
 MK_DTRACE:=	no
@@ -487,6 +492,7 @@ MK_ZONEINFO_LEAPSECONDS_SUPPORT:= no
 MK_CLANG_BOOTSTRAP:= no
 MK_ELFTOOLCHAIN_BOOTSTRAP:= no
 MK_LLD_BOOTSTRAP:= no
+MK_LLVM_BINUTILS_BOOTSTRAP:= no
 .endif
 
 .if ${MK_TOOLCHAIN} == "no"

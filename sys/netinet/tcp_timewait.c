@@ -126,10 +126,7 @@ tcp_twstart(struct tcpcb *tp)
 
 	NET_EPOCH_ASSERT();
 	INP_WLOCK_ASSERT(inp);
-
-	/* A dropped inp should never transition to TIME_WAIT state. */
-	KASSERT((inp->inp_flags & INP_DROPPED) == 0, ("tcp_twstart: "
-	    "(inp->inp_flags & INP_DROPPED) != 0"));
+	MPASS(!(tp->t_flags & TF_DISCONNECTED));
 
 	tcp_state_change(tp, TCPS_TIME_WAIT);
 	tcp_free_sackholes(tp);
@@ -218,12 +215,17 @@ tcp_twcheck(struct inpcb *inp, struct tcpopt *to, struct tcphdr *th,
 	/*
 	 * If a new connection request is received
 	 * while in TIME_WAIT, drop the old connection
-	 * and start over if the sequence numbers
-	 * are above the previous ones.
+	 * and start over if allowed by RFC 6191.
 	 * Allow UDP port number changes in this case.
 	 */
 	if (((thflags & (TH_SYN | TH_ACK)) == TH_SYN) &&
-	    SEQ_GT(th->th_seq, tp->rcv_nxt)) {
+	    ((((tp->t_flags & TF_RCVD_TSTMP) != 0) &&
+	      ((to->to_flags & TOF_TS) != 0) &&
+	      TSTMP_LT(tp->ts_recent, to->to_tsval)) ||
+	     (((tp->t_flags & TF_RCVD_TSTMP) == 0) &&
+	      ((to->to_flags & TOF_TS) != 0) &&
+	      (V_tcp_tolerate_missing_ts == 0)) ||
+	     SEQ_GT(th->th_seq, tp->rcv_nxt))) {
 		/*
 		 * In case we can't upgrade our lock just pretend we have
 		 * lost this packet.

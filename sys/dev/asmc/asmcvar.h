@@ -28,6 +28,10 @@
  */
 
 #define ASMC_MAXFANS	6
+#define ASMC_MAXVAL	32	/* Maximum SMC value size */
+#define ASMC_KEYLEN	4	/* SMC key name length */
+#define ASMC_TYPELEN	4	/* SMC type string length */
+#define ASMC_MAX_SENSORS	64	/* Max sensors per type */
 
 struct asmc_softc {
 	device_t 		sc_dev;
@@ -51,6 +55,25 @@ struct asmc_softc {
 	struct taskqueue 	*sc_sms_tq;
 	struct task 		sc_sms_task;
 	uint8_t			sc_sms_intr_works;
+	struct cdev		*sc_kbd_bkl;
+	uint32_t		sc_kbd_bkl_level;
+#ifdef ASMC_DEBUG
+	/* Raw key access */
+	struct sysctl_oid	*sc_raw_tree;
+	char			sc_rawkey[ASMC_KEYLEN + 1];
+	uint8_t			sc_rawval[ASMC_MAXVAL];
+	uint8_t			sc_rawlen;
+	char			sc_rawtype[ASMC_TYPELEN + 1];
+#endif
+	/* Voltage/Current/Power/Light sensors */
+	char			*sc_voltage_sensors[ASMC_MAX_SENSORS];
+	int			sc_voltage_count;
+	char			*sc_current_sensors[ASMC_MAX_SENSORS];
+	int			sc_current_count;
+	char			*sc_power_sensors[ASMC_MAX_SENSORS];
+	int			sc_power_count;
+	char			*sc_light_sensors[ASMC_MAX_SENSORS];
+	int			sc_light_count;
 };
 
 /*
@@ -69,6 +92,14 @@ struct asmc_softc {
 	bus_write_1(sc->sc_ioport, 0x04, val)
 #define ASMC_CMDREAD		0x10
 #define ASMC_CMDWRITE		0x11
+#define ASMC_CMDGETBYINDEX	0x12
+#define ASMC_CMDGETINFO		0x13
+
+#define ASMC_STATUS_AWAIT_DATA	0x04
+#define ASMC_STATUS_DATA_READY	0x05
+
+#define ASMC_KEYINFO_RESPLEN	6	/* getinfo: 1 len + 4 type + 1 attr */
+#define ASMC_MAXRETRIES		10
 
 /*
  * Interrupt port.
@@ -88,7 +119,7 @@ struct asmc_softc {
 #define ASMC_KEY_FANMANUAL	"FS! "	/* RW; 2 bytes */
 #define ASMC_KEY_FANID		"F%dID"	/* RO; 16 bytes */
 #define ASMC_KEY_FANSPEED	"F%dAc"	/* RO; 2 bytes */
-#define ASMC_KEY_FANMINSPEED	"F%dMn"	/* RO; 2 bytes */
+#define ASMC_KEY_FANMINSPEED	"F%dMn"	/* RW; 2 bytes */
 #define ASMC_KEY_FANMAXSPEED	"F%dMx"	/* RO; 2 bytes */
 #define ASMC_KEY_FANSAFESPEED	"F%dSf"	/* RO; 2 bytes */
 #define ASMC_KEY_FANTARGETSPEED	"F%dTg"	/* RW; 2 bytes */
@@ -542,6 +573,24 @@ struct asmc_softc {
 				  "Intel GPU", "Platform Controller Hub PECI", "CPU System Agent Core", "CPU VCore", "DC In", \
 				  "Pbus", "Ambient Light", "Leftside", "Rightside", "CPU Package Core", \
 				  "CPU Package GPU", "CPU Package Total", "System Total", "DC In" }
+
+#define ASMC_MBP131_TEMPS	{ "TB0T", "TB1T", "TB2T", "TC0F", \
+				  "TC0P", "TC1C", "TC2C", "TCGC", \
+				  "TCSA", "TCXC", "Th1H", "TM0P", \
+				  "TPCD", "Ts0P", "Ts0S", "TaLC", \
+				  "Ts1P", NULL }
+
+#define ASMC_MBP131_TEMPNAMES	{ "battery", "battery_1", "battery_2", "cpu_die_peci", \
+				  "cpu_proximity", "cpu_core_1", "cpu_core_2", "intel_gpu", \
+				  "cpu_sys_agent", "cpu_core_peci", "right_fin_stack", "memory_proximity", \
+				  "platform_ctrl_hub", "trackpad", "bottom_skin", "air_flow", \
+				  "trackpad_act" }
+
+#define ASMC_MBP131_TEMPDESCS	{ "Battery", "Battery Sensor 1", "Battery Sensor 2", "CPU Die (PECI)", \
+				  "CPU Proximity", "CPU Core 1", "CPU Core 2", "Intel GPU", \
+				  "CPU System Agent Core (PECI)", "CPU Core (PECI)", "Right Fin Stack", "DDR3 Proximity", \
+				  "Platform Controller Hub Die", "Trackpad", "Bottom Skin", "Air Flow", \
+				  "Trackpad Actuator" }
 
 #define ASMC_MM_TEMPS		{ "TN0P", "TN1P", NULL }
 #define ASMC_MM_TEMPNAMES	{ "northbridge1", "northbridge2" }

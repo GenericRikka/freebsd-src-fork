@@ -200,7 +200,12 @@ struct rge_softc {
 #define RGE_IMTYPE_SIM		1
 	int			sc_watchdog;
 
+	int			rge_if_flags;
+
 	uint32_t		sc_debug;
+
+	int			sc_rx_process_limit;
+	int			sc_disable_aspm;
 
 	struct rge_drv_stats	sc_drv_stats;
 

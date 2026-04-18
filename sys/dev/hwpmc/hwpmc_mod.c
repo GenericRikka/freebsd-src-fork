@@ -198,7 +198,6 @@ static int	pmc_debugflags_sysctl_handler(SYSCTL_HANDLER_ARGS);
 static int	pmc_debugflags_parse(char *newstr, char *fence);
 #endif
 
-static bool	pmc_is_multipart(struct pmc_sample *ps);
 static void	pmc_multipart_add(struct pmc_sample *ps, int type,
     int length);
 static void	pmc_multipart_copydata(struct pmc_sample *ps,
@@ -818,11 +817,9 @@ pmc_force_context_switch(void)
 uint64_t
 pmc_rdtsc(void)
 {
-#if defined(__i386__) || defined(__amd64__)
-	if (__predict_true(amd_feature & AMDID_RDTSCP))
-		return (rdtscp());
-	else
-		return (rdtsc());
+#if defined(__i386__)
+	/* Unfortunately get_cyclecount on i386 uses cpu_ticks. */
+	return (rdtsc());
 #else
 	return (get_cyclecount());
 #endif
@@ -4636,12 +4633,6 @@ pmc_post_callchain_callback(void)
 	sched_pin();
 
 	return;
-}
-
-static bool
-pmc_is_multipart(struct pmc_sample *ps)
-{
-	return ((ps->ps_flags & PMC_CC_F_MULTIPART) != 0);
 }
 
 static void

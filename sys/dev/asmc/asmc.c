@@ -58,6 +58,9 @@
 #include <dev/acpica/acpivar.h>
 #include <dev/asmc/asmcvar.h>
 
+#include <dev/backlight/backlight.h>
+#include "backlight_if.h"
+
 /*
  * Device interface.
  */
@@ -65,6 +68,15 @@ static int 	asmc_probe(device_t dev);
 static int 	asmc_attach(device_t dev);
 static int 	asmc_detach(device_t dev);
 static int 	asmc_resume(device_t dev);
+
+/*
+ * Backlight interface.
+ */
+static int	asmc_backlight_update_status(device_t dev,
+    struct backlight_props *props);
+static int	asmc_backlight_get_status(device_t dev,
+    struct backlight_props *props);
+static int	asmc_backlight_get_info(device_t dev, struct backlight_info *info);
 
 /*
  * SMC functions.
@@ -110,6 +122,22 @@ static int 	asmc_mbp_sysctl_light_right(SYSCTL_HANDLER_ARGS);
 static int 	asmc_mbp_sysctl_light_control(SYSCTL_HANDLER_ARGS);
 static int 	asmc_mbp_sysctl_light_left_10byte(SYSCTL_HANDLER_ARGS);
 static int	asmc_wol_sysctl(SYSCTL_HANDLER_ARGS);
+
+static int	asmc_key_getinfo(device_t, const char *, uint8_t *, char *);
+
+#ifdef ASMC_DEBUG
+/* Raw key access */
+static int	asmc_raw_key_sysctl(SYSCTL_HANDLER_ARGS);
+static int	asmc_raw_value_sysctl(SYSCTL_HANDLER_ARGS);
+static int	asmc_raw_len_sysctl(SYSCTL_HANDLER_ARGS);
+static int	asmc_raw_type_sysctl(SYSCTL_HANDLER_ARGS);
+#endif
+
+/* Voltage/Current/Power/Light sensor support */
+static int	asmc_sensor_read(device_t, const char *, int *);
+static int	asmc_sensor_sysctl(SYSCTL_HANDLER_ARGS);
+static int	asmc_detect_sensors(device_t);
+static int	asmc_key_dump_by_index(device_t, int, char *, char *, uint8_t *);
 
 struct asmc_model {
 	const char *smc_model; /* smbios.system.product env var. */
@@ -320,6 +348,12 @@ static const struct asmc_model asmc_models[] = {
 	  "Apple SMC MacBook Pro Retina Core i7 (mid 2015, 15-inch, AMD GPU)",
 	  ASMC_SMS_FUNCS_DISABLED, ASMC_FAN_FUNCS2, ASMC_LIGHT_FUNCS,
 	  ASMC_MBP115_TEMPS, ASMC_MBP115_TEMPNAMES, ASMC_MBP115_TEMPDESCS
+	},
+
+	{
+	  "MacBookPro13,1", "Apple SMC MacBook Pro Retina Core i5 (late 2016, 13-inch)",
+	  ASMC_SMS_FUNCS_DISABLED, ASMC_FAN_FUNCS2, ASMC_LIGHT_FUNCS,
+	  ASMC_MBP131_TEMPS, ASMC_MBP131_TEMPNAMES, ASMC_MBP131_TEMPDESCS
 	},
 
 	/* The Mac Mini has no SMS */
@@ -581,6 +615,12 @@ static device_method_t	asmc_methods[] = {
 	DEVMETHOD(device_attach,	asmc_attach),
 	DEVMETHOD(device_detach,	asmc_detach),
 	DEVMETHOD(device_resume,	asmc_resume),
+
+	/* Backlight interface */
+	DEVMETHOD(backlight_update_status, asmc_backlight_update_status),
+	DEVMETHOD(backlight_get_status, asmc_backlight_get_status),
+	DEVMETHOD(backlight_get_info, asmc_backlight_get_info),
+
 	DEVMETHOD_END
 };
 
@@ -606,8 +646,10 @@ static char *asmc_ids[] = { "APP0001", NULL };
 
 static unsigned int light_control = 0;
 
+ACPI_PNP_INFO(asmc_ids);
 DRIVER_MODULE(asmc, acpi, asmc_driver, NULL, NULL);
 MODULE_DEPEND(asmc, acpi, 1, 1, 1);
+MODULE_DEPEND(asmc, backlight, 1, 1, 1);
 
 static const struct asmc_model *
 asmc_match(device_t dev)
@@ -799,7 +841,51 @@ asmc_attach(device_t dev)
 		    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_MPSAFE,
 		    dev, 0, model->smc_light_control, "I",
 		    "Keyboard backlight brightness control");
+
+		sc->sc_kbd_bkl = backlight_register("asmc", dev);
+		if (sc->sc_kbd_bkl == NULL) {
+			device_printf(dev, "Can not register backlight\n");
+			ret = ENXIO;
+			goto err;
+		}
 	}
+
+#ifdef ASMC_DEBUG
+	/*
+	 * Raw SMC key access for debugging.
+	 */
+	sc->sc_raw_tree = SYSCTL_ADD_NODE(sysctlctx,
+	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)), OID_AUTO,
+	    "raw", CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "Raw SMC key access");
+
+	SYSCTL_ADD_PROC(sysctlctx,
+	    SYSCTL_CHILDREN(sc->sc_raw_tree),
+	    OID_AUTO, "key",
+	    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE,
+	    dev, 0, asmc_raw_key_sysctl, "A",
+	    "SMC key name (4 chars)");
+
+	SYSCTL_ADD_PROC(sysctlctx,
+	    SYSCTL_CHILDREN(sc->sc_raw_tree),
+	    OID_AUTO, "value",
+	    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE,
+	    dev, 0, asmc_raw_value_sysctl, "A",
+	    "SMC key value (hex string)");
+
+	SYSCTL_ADD_PROC(sysctlctx,
+	    SYSCTL_CHILDREN(sc->sc_raw_tree),
+	    OID_AUTO, "len",
+	    CTLTYPE_U8 | CTLFLAG_RD | CTLFLAG_MPSAFE,
+	    dev, 0, asmc_raw_len_sysctl, "CU",
+	    "SMC key value length");
+
+	SYSCTL_ADD_PROC(sysctlctx,
+	    SYSCTL_CHILDREN(sc->sc_raw_tree),
+	    OID_AUTO, "type",
+	    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
+	    dev, 0, asmc_raw_type_sysctl, "A",
+	    "SMC key type (4 chars)");
+#endif
 
 	if (model->smc_sms_x == NULL)
 		goto nosms;
@@ -880,6 +966,19 @@ static int
 asmc_detach(device_t dev)
 {
 	struct asmc_softc *sc = device_get_softc(dev);
+
+	if (sc->sc_kbd_bkl != NULL)
+		backlight_destroy(sc->sc_kbd_bkl);
+
+	/* Free sensor key arrays */
+	for (int i = 0; i < sc->sc_voltage_count; i++)
+		free(sc->sc_voltage_sensors[i], M_DEVBUF);
+	for (int i = 0; i < sc->sc_current_count; i++)
+		free(sc->sc_current_sensors[i], M_DEVBUF);
+	for (int i = 0; i < sc->sc_power_count; i++)
+		free(sc->sc_power_sensors[i], M_DEVBUF);
+	for (int i = 0; i < sc->sc_light_count; i++)
+		free(sc->sc_light_sensors[i], M_DEVBUF);
 
 	if (sc->sc_sms_tq) {
 		taskqueue_drain(sc->sc_sms_tq, &sc->sc_sms_task);
@@ -1052,6 +1151,12 @@ nosms:
 		sc->sc_nkeys = 0;
 	}
 
+	/*
+	 * Auto-detect and register voltage/current/power/ambient sensors.
+	 * Scans SMC keys and creates sysctls for detected sensors.
+	 */
+	asmc_detect_sensors(dev);
+
 out_err:
 #ifdef ASMC_DEBUG
 	asmc_dumpall(dev);
@@ -1172,10 +1277,10 @@ static int
 asmc_key_dump(device_t dev, int number)
 {
 	struct asmc_softc *sc = device_get_softc(dev);
-	char key[5] = { 0 };
-	char type[7] = { 0 };
+	char key[ASMC_KEYLEN + 1] = { 0 };
+	char type[ASMC_KEYINFO_RESPLEN + 1] = { 0 };
 	uint8_t index[4];
-	uint8_t v[32];
+	uint8_t v[ASMC_MAXVAL];
 	uint8_t maxlen;
 	int i, error = 1, try = 0;
 
@@ -1184,40 +1289,40 @@ asmc_key_dump(device_t dev, int number)
 	index[0] = (number >> 24) & 0xff;
 	index[1] = (number >> 16) & 0xff;
 	index[2] = (number >> 8) & 0xff;
-	index[3] = (number) & 0xff;
+	index[3] = number & 0xff;
 
 begin:
-	if (asmc_command(dev, 0x12))
+	if (asmc_command(dev, ASMC_CMDGETBYINDEX))
 		goto out;
 
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < ASMC_KEYLEN; i++) {
 		ASMC_DATAPORT_WRITE(sc, index[i]);
-		if (asmc_wait(dev, 0x04))
+		if (asmc_wait(dev, ASMC_STATUS_AWAIT_DATA))
 			goto out;
 	}
 
-	ASMC_DATAPORT_WRITE(sc, 4);
+	ASMC_DATAPORT_WRITE(sc, ASMC_KEYLEN);
 
-	for (i = 0; i < 4; i++) {
-		if (asmc_wait(dev, 0x05))
+	for (i = 0; i < ASMC_KEYLEN; i++) {
+		if (asmc_wait(dev, ASMC_STATUS_DATA_READY))
 			goto out;
 		key[i] = ASMC_DATAPORT_READ(sc);
 	}
 
-	/* get type */
-	if (asmc_command(dev, 0x13))
+	/* Get key info (length + type). */
+	if (asmc_command(dev, ASMC_CMDGETINFO))
 		goto out;
 
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < ASMC_KEYLEN; i++) {
 		ASMC_DATAPORT_WRITE(sc, key[i]);
-		if (asmc_wait(dev, 0x04))
+		if (asmc_wait(dev, ASMC_STATUS_AWAIT_DATA))
 			goto out;
 	}
 
-	ASMC_DATAPORT_WRITE(sc, 6);
+	ASMC_DATAPORT_WRITE(sc, ASMC_KEYINFO_RESPLEN);
 
-	for (i = 0; i < 6; i++) {
-		if (asmc_wait(dev, 0x05))
+	for (i = 0; i < ASMC_KEYINFO_RESPLEN; i++) {
+		if (asmc_wait(dev, ASMC_STATUS_DATA_READY))
 			goto out;
 		type[i] = ASMC_DATAPORT_READ(sc);
 	}
@@ -1225,42 +1330,599 @@ begin:
 	error = 0;
 out:
 	if (error) {
-		if (++try < 10)
+		if (++try < ASMC_MAXRETRIES)
 			goto begin;
-		device_printf(dev, "%s for key %s failed %d times, giving up\n",
-		    __func__, key, try);
-		mtx_unlock_spin(&sc->sc_mtx);
-	} else {
-		char buf[1024];
-		char buf2[8];
-		mtx_unlock_spin(&sc->sc_mtx);
-		maxlen = type[0];
-		type[0] = ' ';
-		type[5] = 0;
-		if (maxlen > sizeof(v)) {
-			device_printf(dev,
-			    "WARNING: cropping maxlen from %d to %zu\n", maxlen,
-			    sizeof(v));
-			maxlen = sizeof(v);
-		}
-		for (i = 0; i < sizeof(v); i++) {
-			v[i] = 0;
-		}
-		asmc_key_read(dev, key, v, maxlen);
-		snprintf(buf, sizeof(buf),
-		    "key %d is: %s, type %s (len %d), data",
-		    number, key, type, maxlen);
-		for (i = 0; i < maxlen; i++) {
-			snprintf(buf2, sizeof(buf2), " %02x", v[i]);
-			strlcat(buf, buf2, sizeof(buf));
-		}
-		strlcat(buf, " \n", sizeof(buf));
-		device_printf(dev, "%s", buf);
+		device_printf(dev,
+		    "%s for key %d failed %d times, giving up\n",
+		    __func__, number, try);
+	}
+	mtx_unlock_spin(&sc->sc_mtx);
+
+	if (error)
+		return (error);
+
+	maxlen = type[0];
+	type[0] = ' ';
+	type[5] = '\0';
+	if (maxlen > sizeof(v))
+		maxlen = sizeof(v);
+
+	memset(v, 0, sizeof(v));
+	error = asmc_key_read(dev, key, v, maxlen);
+	if (error)
+		return (error);
+
+	device_printf(dev, "key %d: %s, type%s (len %d), data",
+	    number, key, type, maxlen);
+	for (i = 0; i < maxlen; i++)
+		printf(" %02x", v[i]);
+	printf("\n");
+
+	return (0);
+}
+#endif /* ASMC_DEBUG */
+
+/*
+ * Get key info (length and type) from SMC using command 0x13.
+ * If len is non-NULL, stores the key's value length.
+ * If type is non-NULL, stores the 4-char type string (must be at least 5 bytes).
+ */
+static int
+asmc_key_getinfo(device_t dev, const char *key, uint8_t *len, char *type)
+{
+	struct asmc_softc *sc = device_get_softc(dev);
+	uint8_t info[ASMC_KEYINFO_RESPLEN];
+	int i, error = -1, try = 0;
+
+	mtx_lock_spin(&sc->sc_mtx);
+
+begin:
+	if (asmc_command(dev, ASMC_CMDGETINFO))
+		goto out;
+
+	for (i = 0; i < ASMC_KEYLEN; i++) {
+		ASMC_DATAPORT_WRITE(sc, key[i]);
+		if (asmc_wait(dev, ASMC_STATUS_AWAIT_DATA))
+			goto out;
 	}
 
+	ASMC_DATAPORT_WRITE(sc, ASMC_KEYINFO_RESPLEN);
+
+	for (i = 0; i < ASMC_KEYINFO_RESPLEN; i++) {
+		if (asmc_wait(dev, ASMC_STATUS_DATA_READY))
+			goto out;
+		info[i] = ASMC_DATAPORT_READ(sc);
+	}
+
+	error = 0;
+out:
+	if (error && ++try < ASMC_MAXRETRIES)
+		goto begin;
+	mtx_unlock_spin(&sc->sc_mtx);
+
+	if (error == 0) {
+		if (len != NULL)
+			*len = info[0];
+		if (type != NULL) {
+			for (i = 0; i < ASMC_TYPELEN; i++)
+				type[i] = info[i + 1];
+			type[ASMC_TYPELEN] = '\0';
+		}
+	}
 	return (error);
 }
+
+#ifdef ASMC_DEBUG
+/*
+ * Raw SMC key access sysctls - enables reading/writing any SMC key by name
+ * Usage:
+ *   sysctl dev.asmc.0.raw.key=AUPO   # Set key, auto-detects length
+ *   sysctl dev.asmc.0.raw.value      # Read current value (hex bytes)
+ *   sysctl dev.asmc.0.raw.value=01   # Write new value
+ */
+static int
+asmc_raw_key_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	device_t dev = (device_t) arg1;
+	struct asmc_softc *sc = device_get_softc(dev);
+	char newkey[ASMC_KEYLEN + 1];
+	uint8_t keylen;
+	int error;
+
+	strlcpy(newkey, sc->sc_rawkey, sizeof(newkey));
+	error = sysctl_handle_string(oidp, newkey, sizeof(newkey), req);
+	if (error || req->newptr == NULL)
+		return (error);
+
+	if (strlen(newkey) != ASMC_KEYLEN)
+		return (EINVAL);
+
+	/* Get key info to auto-detect length and type */
+	if (asmc_key_getinfo(dev, newkey, &keylen, sc->sc_rawtype) != 0)
+		return (ENOENT);
+
+	if (keylen > ASMC_MAXVAL)
+		keylen = ASMC_MAXVAL;
+
+	strlcpy(sc->sc_rawkey, newkey, sizeof(sc->sc_rawkey));
+	sc->sc_rawlen = keylen;
+	memset(sc->sc_rawval, 0, sizeof(sc->sc_rawval));
+
+	/* Read the key value */
+	asmc_key_read(dev, sc->sc_rawkey, sc->sc_rawval, sc->sc_rawlen);
+
+	return (0);
+}
+
+static int
+asmc_raw_value_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	device_t dev = (device_t) arg1;
+	struct asmc_softc *sc = device_get_softc(dev);
+	char hexbuf[ASMC_MAXVAL * 2 + 1];
+	int error, i;
+
+	/* Refresh from SMC if a key has been selected. */
+	if (sc->sc_rawkey[0] != '\0') {
+		asmc_key_read(dev, sc->sc_rawkey, sc->sc_rawval,
+		    sc->sc_rawlen > 0 ? sc->sc_rawlen : ASMC_MAXVAL);
+	}
+
+	/* Format as hex string */
+	for (i = 0; i < sc->sc_rawlen && i < ASMC_MAXVAL; i++)
+		snprintf(hexbuf + i * 2, 3, "%02x", sc->sc_rawval[i]);
+	hexbuf[i * 2] = '\0';
+
+	error = sysctl_handle_string(oidp, hexbuf, sizeof(hexbuf), req);
+	if (error || req->newptr == NULL)
+		return (error);
+
+	/* Reject writes until a key is selected via raw.key. */
+	if (sc->sc_rawkey[0] == '\0')
+		return (EINVAL);
+
+	memset(sc->sc_rawval, 0, sizeof(sc->sc_rawval));
+	for (i = 0; i < sc->sc_rawlen && hexbuf[i*2] && hexbuf[i*2+1]; i++) {
+		unsigned int val;
+		char tmp[3] = { hexbuf[i*2], hexbuf[i*2+1], 0 };
+		if (sscanf(tmp, "%02x", &val) == 1)
+			sc->sc_rawval[i] = (uint8_t)val;
+	}
+
+	if (asmc_key_write(dev, sc->sc_rawkey, sc->sc_rawval, sc->sc_rawlen) != 0)
+		return (EIO);
+
+	return (0);
+}
+
+static int
+asmc_raw_len_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	device_t dev = (device_t) arg1;
+	struct asmc_softc *sc = device_get_softc(dev);
+
+	return (sysctl_handle_8(oidp, &sc->sc_rawlen, 0, req));
+}
+
+static int
+asmc_raw_type_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	device_t dev = (device_t) arg1;
+	struct asmc_softc *sc = device_get_softc(dev);
+
+	return (sysctl_handle_string(oidp, sc->sc_rawtype,
+	    sizeof(sc->sc_rawtype), req));
+}
 #endif
+
+/*
+ * Convert signed fixed-point SMC values to milli-units.
+ * Format "spXY" means signed with X integer bits and Y fraction bits.
+ */
+static int
+asmc_sp78_to_milli(const uint8_t *buf)
+{
+	int16_t val = (int16_t)be16dec(buf);
+
+	return ((int)val * 1000) / 256;
+}
+
+static int
+asmc_sp87_to_milli(const uint8_t *buf)
+{
+	int16_t val = (int16_t)be16dec(buf);
+
+	return ((int)val * 1000) / 128;
+}
+
+static int
+asmc_sp4b_to_milli(const uint8_t *buf)
+{
+	int16_t val = (int16_t)be16dec(buf);
+
+	return ((int)val * 1000) / 2048;
+}
+
+static int
+asmc_sp5a_to_milli(const uint8_t *buf)
+{
+	int16_t val = (int16_t)be16dec(buf);
+
+	return ((int)val * 1000) / 1024;
+}
+
+static int
+asmc_sp69_to_milli(const uint8_t *buf)
+{
+	int16_t val = (int16_t)be16dec(buf);
+
+	return ((int)val * 1000) / 512;
+}
+
+static int
+asmc_sp96_to_milli(const uint8_t *buf)
+{
+	int16_t val = (int16_t)be16dec(buf);
+
+	return ((int)val * 1000) / 64;
+}
+
+static int
+asmc_sp2d_to_milli(const uint8_t *buf)
+{
+	int16_t val = (int16_t)be16dec(buf);
+
+	return ((int)val * 1000) / 8192;
+}
+
+static bool
+asmc_sensor_type_supported(const char *type)
+{
+
+	return (strncmp(type, "sp78", 4) == 0 ||
+	    strncmp(type, "sp87", 4) == 0 ||
+	    strncmp(type, "sp4b", 4) == 0 ||
+	    strncmp(type, "sp5a", 4) == 0 ||
+	    strncmp(type, "sp69", 4) == 0 ||
+	    strncmp(type, "sp96", 4) == 0 ||
+	    strncmp(type, "sp2d", 4) == 0 ||
+	    strncmp(type, "ui16", 4) == 0);
+}
+
+/*
+ * Generic sensor value reader with automatic type conversion.
+ * Reads an SMC key, detects its type, and converts to millivalue.
+ */
+static int
+asmc_sensor_read(device_t dev, const char *key, int *millivalue)
+{
+	uint8_t buf[2];
+	char type[ASMC_TYPELEN + 1];
+	uint8_t len;
+	int error;
+
+	error = asmc_key_getinfo(dev, key, &len, type);
+	if (error != 0)
+		return (error);
+
+	if (len != 2) {
+		if (bootverbose)
+			device_printf(dev,
+			    "%s: key %s unexpected length %d\n",
+			    __func__, key, len);
+		return (ENXIO);
+	}
+
+	error = asmc_key_read(dev, key, buf, sizeof(buf));
+	if (error != 0)
+		return (error);
+
+	if (strncmp(type, "sp78", 4) == 0) {
+		*millivalue = asmc_sp78_to_milli(buf);
+	} else if (strncmp(type, "sp87", 4) == 0) {
+		*millivalue = asmc_sp87_to_milli(buf);
+	} else if (strncmp(type, "sp4b", 4) == 0) {
+		*millivalue = asmc_sp4b_to_milli(buf);
+	} else if (strncmp(type, "sp5a", 4) == 0) {
+		*millivalue = asmc_sp5a_to_milli(buf);
+	} else if (strncmp(type, "sp69", 4) == 0) {
+		*millivalue = asmc_sp69_to_milli(buf);
+	} else if (strncmp(type, "sp96", 4) == 0) {
+		*millivalue = asmc_sp96_to_milli(buf);
+	} else if (strncmp(type, "sp2d", 4) == 0) {
+		*millivalue = asmc_sp2d_to_milli(buf);
+	} else if (strncmp(type, "ui16", 4) == 0) {
+		*millivalue = be16dec(buf);
+	} else {
+		if (bootverbose)
+			device_printf(dev,
+			    "%s: unknown type '%s' for key %s\n",
+			    __func__, type, key);
+		return (ENXIO);
+	}
+
+	return (0);
+}
+
+/*
+ * Generic sensor sysctl handler for voltage/current/power/light sensors.
+ * arg2 encodes: sensor_type (high byte) | sensor_index (low byte)
+ * Sensor types: 'V'=voltage, 'I'=current, 'P'=power, 'L'=light
+ */
+static int
+asmc_sensor_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	device_t dev = (device_t) arg1;
+	struct asmc_softc *sc = device_get_softc(dev);
+	int error, val;
+	int sensor_type = (arg2 >> 8) & 0xFF;
+	int sensor_idx = arg2 & 0xFF;
+	const char *key = NULL;
+
+	/* Select sensor based on type and index */
+	switch (sensor_type) {
+	case 'V':  /* Voltage */
+		if (sensor_idx < sc->sc_voltage_count)
+			key = sc->sc_voltage_sensors[sensor_idx];
+		break;
+	case 'I':  /* Current */
+		if (sensor_idx < sc->sc_current_count)
+			key = sc->sc_current_sensors[sensor_idx];
+		break;
+	case 'P':  /* Power */
+		if (sensor_idx < sc->sc_power_count)
+			key = sc->sc_power_sensors[sensor_idx];
+		break;
+	case 'L':  /* Light */
+		if (sensor_idx < sc->sc_light_count)
+			key = sc->sc_light_sensors[sensor_idx];
+		break;
+	default:
+		return (EINVAL);
+	}
+
+	if (key == NULL)
+		return (ENOENT);
+
+	error = asmc_sensor_read(dev, key, &val);
+	if (error != 0)
+		return (error);
+
+	return (sysctl_handle_int(oidp, &val, 0, req));
+}
+
+/*
+ * Detect and register voltage/current/power/ambient sensors.
+ * Scans all SMC keys and identifies sensor keys by prefix.
+ * Returns 0 on success, -1 on error.
+ */
+static int
+asmc_detect_sensors(device_t dev)
+{
+	struct asmc_softc *sc = device_get_softc(dev);
+	struct sysctl_ctx_list *sysctlctx;
+	struct sysctl_oid *tree_node;
+	char key[ASMC_KEYLEN + 1];
+	char type[ASMC_TYPELEN + 1];
+	uint8_t len;
+	unsigned int nkeys;
+	unsigned int i;
+	int error;
+	char *sensor_key;
+
+	/* Initialize counts */
+	sc->sc_voltage_count = 0;
+	sc->sc_current_count = 0;
+	sc->sc_power_count = 0;
+	sc->sc_light_count = 0;
+
+	if (sc->sc_nkeys == 0)
+		return (0);
+	nkeys = sc->sc_nkeys;
+
+	/* Scan all keys for voltage/current/power/ambient light sensors */
+	for (i = 0; i < nkeys; i++) {
+		/* Get key name by index */
+		error = asmc_key_dump_by_index(dev, i, key, type, &len);
+		if (error != 0)
+			continue;
+		if (!asmc_sensor_type_supported(type))
+			continue;
+
+		/* Voltage sensors (VC*, VD*, VG*, VP*, VI*) */
+		if (key[0] == 'V' && (key[1] == 'C' || key[1] == 'D' ||
+		    key[1] == 'G' || key[1] == 'P' || key[1] == 'I') &&
+		    len == 2) {
+			if (sc->sc_voltage_count >= ASMC_MAX_SENSORS)
+				continue;
+			sensor_key = malloc(ASMC_KEYLEN + 1,
+			    M_DEVBUF, M_WAITOK);
+			memcpy(sensor_key, key, ASMC_KEYLEN + 1);
+			sc->sc_voltage_sensors[sc->sc_voltage_count++] =
+			    sensor_key;
+		} else if (key[0] == 'I' && (key[1] == 'C' ||
+		    key[1] == 'D' || key[1] == 'G' || key[1] == 'M' ||
+		    key[1] == 'N' || key[1] == 'O' || key[1] == 'H' ||
+		    key[1] == 'P' || key[1] == 'B' || key[1] == 'A' ||
+		    key[1] == 'L') && len == 2) {
+			/* Current sensors */
+			if (sc->sc_current_count >= ASMC_MAX_SENSORS)
+				continue;
+			sensor_key = malloc(ASMC_KEYLEN + 1,
+			    M_DEVBUF, M_WAITOK);
+			memcpy(sensor_key, key, ASMC_KEYLEN + 1);
+			sc->sc_current_sensors[sc->sc_current_count++] =
+			    sensor_key;
+		} else if (key[0] == 'P' && (key[1] == 'C' ||
+		    key[1] == 'D' || key[1] == 'N' || key[1] == 'S' ||
+		    key[1] == 'T' || key[1] == 'H' || key[1] == 'F' ||
+		    key[1] == 'Z' || key[1] == 'z') && len == 2) {
+			/* Power sensors */
+			if (sc->sc_power_count >= ASMC_MAX_SENSORS)
+				continue;
+			sensor_key = malloc(ASMC_KEYLEN + 1,
+			    M_DEVBUF, M_WAITOK);
+			memcpy(sensor_key, key, ASMC_KEYLEN + 1);
+			sc->sc_power_sensors[sc->sc_power_count++] =
+			    sensor_key;
+		} else if (key[0] == 'A' && key[1] == 'L' &&
+		    (key[2] == 'V' || key[2] == 'S') && len == 2) {
+			/* Ambient light sensors */
+			if (sc->sc_light_count >= ASMC_MAX_SENSORS)
+				continue;
+			sensor_key = malloc(ASMC_KEYLEN + 1,
+			    M_DEVBUF, M_WAITOK);
+			memcpy(sensor_key, key, ASMC_KEYLEN + 1);
+			sc->sc_light_sensors[sc->sc_light_count++] =
+			    sensor_key;
+		}
+	}
+
+	if (bootverbose)
+		device_printf(dev,
+		    "detected %d voltage, %d current, "
+		    "%d power, %d light sensors\n",
+		    sc->sc_voltage_count, sc->sc_current_count,
+		    sc->sc_power_count, sc->sc_light_count);
+
+	/* Register sysctls for detected sensors */
+	sysctlctx = device_get_sysctl_ctx(dev);
+
+	/* Voltage sensors */
+	if (sc->sc_voltage_count > 0) {
+		tree_node = SYSCTL_ADD_NODE(sysctlctx,
+		    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)), OID_AUTO,
+		    "voltage", CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "Voltage sensors (millivolts)");
+
+		for (i = 0; i < sc->sc_voltage_count; i++) {
+			SYSCTL_ADD_PROC(sysctlctx, SYSCTL_CHILDREN(tree_node),
+			    OID_AUTO, sc->sc_voltage_sensors[i],
+			    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_MPSAFE,
+			    dev, ('V' << 8) | i, asmc_sensor_sysctl, "I",
+			    "Voltage sensor (millivolts)");
+		}
+	}
+
+	/* Current sensors */
+	if (sc->sc_current_count > 0) {
+		tree_node = SYSCTL_ADD_NODE(sysctlctx,
+		    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)), OID_AUTO,
+		    "current", CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "Current sensors (milliamps)");
+
+		for (i = 0; i < sc->sc_current_count; i++) {
+			SYSCTL_ADD_PROC(sysctlctx, SYSCTL_CHILDREN(tree_node),
+			    OID_AUTO, sc->sc_current_sensors[i],
+			    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_MPSAFE,
+			    dev, ('I' << 8) | i, asmc_sensor_sysctl, "I",
+			    "Current sensor (milliamps)");
+		}
+	}
+
+	/* Power sensors */
+	if (sc->sc_power_count > 0) {
+		tree_node = SYSCTL_ADD_NODE(sysctlctx,
+		    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)), OID_AUTO,
+		    "power", CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "Power sensors (milliwatts)");
+
+		for (i = 0; i < sc->sc_power_count; i++) {
+			SYSCTL_ADD_PROC(sysctlctx, SYSCTL_CHILDREN(tree_node),
+			    OID_AUTO, sc->sc_power_sensors[i],
+			    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_MPSAFE,
+			    dev, ('P' << 8) | i, asmc_sensor_sysctl, "I",
+			    "Power sensor (milliwatts)");
+		}
+	}
+
+	/* Ambient light sensors */
+	if (sc->sc_light_count > 0) {
+		tree_node = SYSCTL_ADD_NODE(sysctlctx,
+		    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)), OID_AUTO,
+		    "ambient", CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "Ambient light sensors");
+
+		for (i = 0; i < sc->sc_light_count; i++) {
+			SYSCTL_ADD_PROC(sysctlctx, SYSCTL_CHILDREN(tree_node),
+			    OID_AUTO, sc->sc_light_sensors[i],
+			    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_MPSAFE,
+			    dev, ('L' << 8) | i, asmc_sensor_sysctl, "I",
+			    "Light sensor value");
+		}
+	}
+
+	return (0);
+}
+
+/*
+ * Helper function to get key info by index (for sensor detection).
+ */
+static int
+asmc_key_dump_by_index(device_t dev, int index, char *key_out,
+    char *type_out, uint8_t *len_out)
+{
+	struct asmc_softc *sc = device_get_softc(dev);
+	uint8_t index_buf[ASMC_KEYLEN];
+	uint8_t key_buf[ASMC_KEYLEN];
+	uint8_t info_buf[ASMC_KEYINFO_RESPLEN];
+	int error = ENXIO, try = 0;
+	int i;
+
+	mtx_lock_spin(&sc->sc_mtx);
+
+	index_buf[0] = (index >> 24) & 0xff;
+	index_buf[1] = (index >> 16) & 0xff;
+	index_buf[2] = (index >> 8) & 0xff;
+	index_buf[3] = index & 0xff;
+
+begin:
+	if (asmc_command(dev, ASMC_CMDGETBYINDEX))
+		goto out;
+
+	for (i = 0; i < ASMC_KEYLEN; i++) {
+		ASMC_DATAPORT_WRITE(sc, index_buf[i]);
+		if (asmc_wait(dev, ASMC_STATUS_AWAIT_DATA))
+			goto out;
+	}
+
+	ASMC_DATAPORT_WRITE(sc, ASMC_KEYLEN);
+
+	for (i = 0; i < ASMC_KEYLEN; i++) {
+		if (asmc_wait(dev, ASMC_STATUS_DATA_READY))
+			goto out;
+		key_buf[i] = ASMC_DATAPORT_READ(sc);
+	}
+
+	if (asmc_command(dev, ASMC_CMDGETINFO))
+		goto out;
+
+	for (i = 0; i < ASMC_KEYLEN; i++) {
+		ASMC_DATAPORT_WRITE(sc, key_buf[i]);
+		if (asmc_wait(dev, ASMC_STATUS_AWAIT_DATA))
+			goto out;
+	}
+
+	ASMC_DATAPORT_WRITE(sc, ASMC_KEYINFO_RESPLEN);
+
+	for (i = 0; i < ASMC_KEYINFO_RESPLEN; i++) {
+		if (asmc_wait(dev, ASMC_STATUS_DATA_READY))
+			goto out;
+		info_buf[i] = ASMC_DATAPORT_READ(sc);
+	}
+
+	memcpy(key_out, key_buf, ASMC_KEYLEN);
+	key_out[ASMC_KEYLEN] = '\0';
+	*len_out = info_buf[0];
+	memcpy(type_out, &info_buf[1], ASMC_TYPELEN);
+	type_out[ASMC_TYPELEN] = '\0';
+	error = 0;
+
+out:
+	if (error) {
+		if (++try < ASMC_MAXRETRIES)
+			goto begin;
+	}
+
+	mtx_unlock_spin(&sc->sc_mtx);
+	return (error);
+}
 
 static int
 asmc_key_write(device_t dev, const char *key, uint8_t *buf, uint8_t len)
@@ -1738,6 +2400,7 @@ static int
 asmc_mbp_sysctl_light_control(SYSCTL_HANDLER_ARGS)
 {
 	device_t dev = (device_t)arg1;
+	struct asmc_softc *sc = device_get_softc(dev);
 	uint8_t buf[2];
 	int error;
 	int v;
@@ -1749,6 +2412,7 @@ asmc_mbp_sysctl_light_control(SYSCTL_HANDLER_ARGS)
 		if (v < 0 || v > 255)
 			return (EINVAL);
 		light_control = v;
+		sc->sc_kbd_bkl_level = v * 100 / 255;
 		buf[0] = light_control;
 		buf[1] = 0x00;
 		asmc_key_write(dev, ASMC_KEY_LIGHTVALUE, buf, sizeof(buf));
@@ -1813,6 +2477,41 @@ asmc_wol_sysctl(SYSCTL_HANDLER_ARGS)
 	/* Write AUPO */
 	if (asmc_key_write(dev, ASMC_KEY_AUPO, &aupo, 1) != 0)
 		return (EIO);
+
+	return (0);
+}
+
+static int
+asmc_backlight_update_status(device_t dev, struct backlight_props *props)
+{
+	struct asmc_softc *sc = device_get_softc(dev);
+	uint8_t buf[2];
+
+	sc->sc_kbd_bkl_level = props->brightness;
+	light_control = props->brightness * 255 / 100;
+	buf[0] = light_control;
+	buf[1] = 0x00;
+	asmc_key_write(dev, ASMC_KEY_LIGHTVALUE, buf, sizeof(buf));
+
+	return (0);
+}
+
+static int
+asmc_backlight_get_status(device_t dev, struct backlight_props *props)
+{
+	struct asmc_softc *sc = device_get_softc(dev);
+
+	props->brightness = sc->sc_kbd_bkl_level;
+	props->nlevels = 0;
+
+	return (0);
+}
+
+static int
+asmc_backlight_get_info(device_t dev, struct backlight_info *info)
+{
+	info->type = BACKLIGHT_TYPE_KEYBOARD;
+	strlcpy(info->name, "Apple MacBook Keyboard", BACKLIGHTMAXNAMELENGTH);
 
 	return (0);
 }

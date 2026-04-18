@@ -152,13 +152,13 @@ int	 pfctl_call_cleartables(int, int, struct pfr_anchoritem *);
 int	 pfctl_call_clearanchors(int, int, struct pfr_anchoritem *);
 int	 pfctl_call_showtables(int, int, struct pfr_anchoritem *);
 
-RB_PROTOTYPE(pfctl_statelim_ids, pfctl_statelim, entry,
+RB_PROTOTYPE(pfctl_statelim_ids, pfctl_statelim, id_entry,
     pfctl_statelim_id_cmp);
-RB_PROTOTYPE(pfctl_statelim_nms, pfctl_statelim, entry,
+RB_PROTOTYPE(pfctl_statelim_nms, pfctl_statelim, nm_entry,
     pfctl_statelim_nm_cmp);
-RB_PROTOTYPE(pfctl_sourcelim_ids, pfctl_sourcelim, entry,
+RB_PROTOTYPE(pfctl_sourcelim_ids, pfctl_sourcelim, id_entry,
     pfctl_sourcelim_id_cmp);
-RB_PROTOTYPE(pfctl_sourcelim_nms, pfctl_sourcelim, entry,
+RB_PROTOTYPE(pfctl_sourcelim_nms, pfctl_sourcelim, nm_entry,
     pfctl_sourcelim_nm_cmp);
 
 enum showopt_id {
@@ -2513,8 +2513,9 @@ pfctl_load_ruleset(struct pfctl *pf, char *path, struct pfctl_ruleset *rs,
 			printf("\n");
 	}
 
-	if (pf->optimize && rs_num == PF_RULESET_FILTER)
-		pfctl_optimize_ruleset(pf, rs);
+	if (pf->optimize && rs_num == PF_RULESET_FILTER &&
+	    (error = pfctl_optimize_ruleset(pf, rs)) != 0)
+		goto error;
 
 	while ((r = TAILQ_FIRST(rs->rules[rs_num].active.ptr)) != NULL) {
 		TAILQ_REMOVE(rs->rules[rs_num].active.ptr, r, entries);
@@ -2614,13 +2615,13 @@ pfctl_load_rule(struct pfctl *pf, char *path, struct pfctl_rule *r, int depth)
 		}
 	}
 
-	if (pf->opts & PF_OPT_VERBOSE) {
+	if (pf->opts & PF_OPT_VERBOSE || was_present) {
 		INDENT(depth, !(pf->opts & PF_OPT_VERBOSE2));
 		print_rule(r, name,
 		    pf->opts & PF_OPT_VERBOSE2,
 		    pf->opts & PF_OPT_NUMERIC);
 		if (was_present)
-			printf(" -- rule was already present");
+			printf(" -- rule was already present\n");
 	}
 	path[len] = '\0';
 	pfctl_clear_pool(&r->rdr);
@@ -4186,7 +4187,8 @@ pfctl_statelim_id_cmp(const struct pfctl_statelim *a,
 	return (0);
 }
 
-RB_GENERATE(pfctl_statelim_ids, pfctl_statelim, entry, pfctl_statelim_id_cmp);
+RB_GENERATE(pfctl_statelim_ids, pfctl_statelim, id_entry,
+    pfctl_statelim_id_cmp);
 
 static inline int
 pfctl_statelim_nm_cmp(const struct pfctl_statelim *a,
@@ -4195,7 +4197,8 @@ pfctl_statelim_nm_cmp(const struct pfctl_statelim *a,
 	return (strcmp(a->ioc.name, b->ioc.name));
 }
 
-RB_GENERATE(pfctl_statelim_nms, pfctl_statelim, entry, pfctl_statelim_nm_cmp);
+RB_GENERATE(pfctl_statelim_nms, pfctl_statelim, nm_entry,
+    pfctl_statelim_nm_cmp);
 
 int
 pfctl_add_statelim(struct pfctl *pf, struct pfctl_statelim *stlim)
@@ -4252,7 +4255,7 @@ pfctl_sourcelim_id_cmp(const struct pfctl_sourcelim *a,
 	return (0);
 }
 
-RB_GENERATE(pfctl_sourcelim_ids, pfctl_sourcelim, entry,
+RB_GENERATE(pfctl_sourcelim_ids, pfctl_sourcelim, id_entry,
     pfctl_sourcelim_id_cmp);
 
 static inline int
@@ -4262,7 +4265,7 @@ pfctl_sourcelim_nm_cmp(const struct pfctl_sourcelim *a,
 	return (strcmp(a->ioc.name, b->ioc.name));
 }
 
-RB_GENERATE(pfctl_sourcelim_nms, pfctl_sourcelim, entry,
+RB_GENERATE(pfctl_sourcelim_nms, pfctl_sourcelim, nm_entry,
     pfctl_sourcelim_nm_cmp);
 
 int
@@ -4271,8 +4274,9 @@ pfctl_add_sourcelim(struct pfctl *pf, struct pfctl_sourcelim *srlim)
 	struct pfctl_sourcelim *osrlim;
 
 	osrlim = RB_INSERT(pfctl_sourcelim_ids, &pf->sourcelim_ids, srlim);
-	if (osrlim != NULL)
+	if (osrlim != NULL) {
 		return (-1);
+	}
 
 	osrlim = RB_INSERT(pfctl_sourcelim_nms, &pf->sourcelim_nms, srlim);
 	if (osrlim != NULL) {

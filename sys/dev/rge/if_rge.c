@@ -103,12 +103,7 @@ static void	rge_tx_task(void *, int);
 static void	rge_txq_flush_mbufs(struct rge_softc *sc);
 static void	rge_tick(void *);
 static void	rge_link_state(struct rge_softc *);
-#if 0
-#ifndef SMALL_KERNEL
-int		rge_wol(struct ifnet *, int);
-void		rge_wol_power(struct rge_softc *);
-#endif
-#endif
+static void	rge_setwol(struct rge_softc *);
 
 struct rge_matchid {
 	uint16_t vendor;
@@ -161,7 +156,11 @@ rge_attach_if(struct rge_softc *sc, const char *eaddr)
 	if_setcapabilities(sc->sc_ifp, IFCAP_HWCSUM);
 	if_setcapenable(sc->sc_ifp, if_getcapabilities(sc->sc_ifp));
 
-	/* TODO: set WOL */
+	/* Enable WOL if PM is supported. */
+	if (pci_has_pm(sc->sc_dev)) {
+		if_setcapabilitiesbit(sc->sc_ifp, IFCAP_WOL_MAGIC, 0);
+		if_setcapenablebit(sc->sc_ifp, IFCAP_WOL_MAGIC, 0);
+	}
 
 	/* Attach interface */
 	ether_ifattach(sc->sc_ifp, eaddr);
@@ -446,23 +445,19 @@ rge_attach(device_t dev)
 
 	rge_config_imtype(sc, RGE_IMTYPE_SIM);
 
-	/* TODO: disable ASPM/ECPM? */
-
-#if 0
-	/*
-	 * PCI Express check.
-	 */
-	if (pci_get_capability(pa->pa_pc, pa->pa_tag, PCI_CAP_PCIEXPRESS,
-	    &offset, NULL)) {
-		/* Disable PCIe ASPM and ECPM. */
-		reg = pci_conf_read(pa->pa_pc, pa->pa_tag,
-		    offset + PCI_PCIE_LCSR);
-		reg &= ~(PCI_PCIE_LCSR_ASPM_L0S | PCI_PCIE_LCSR_ASPM_L1 |
-		    PCI_PCIE_LCSR_ECPM);
-		pci_conf_write(pa->pa_pc, pa->pa_tag, offset + PCI_PCIE_LCSR,
-		    reg);
+	/* Disable PCIe ASPM and ECPM if requested. */
+	if (sc->sc_disable_aspm) {
+		int ecap;
+		if (pci_find_cap(dev, PCIY_EXPRESS, &ecap) == 0) {
+			uint16_t lctl;
+			lctl = pci_read_config(dev,
+			    ecap + PCIER_LINK_CTL, 2);
+			lctl &= ~(PCIEM_LINK_CTL_ASPMC |
+			    PCIEM_LINK_CTL_ECPM);
+			pci_write_config(dev,
+			    ecap + PCIER_LINK_CTL, lctl, 2);
+		}
 	}
-#endif
 
 	RGE_LOCK(sc);
 	if (rge_chipinit(sc)) {
@@ -653,26 +648,6 @@ rge_detach(device_t dev)
 
 	return (0);
 }
-
-#if 0
-
-int
-rge_activate(struct device *self, int act)
-{
-#ifndef SMALL_KERNEL
-	struct rge_softc *sc = (struct rge_softc *)self;
-#endif
-
-	switch (act) {
-	case DVACT_POWERDOWN:
-#ifndef SMALL_KERNEL
-		rge_wol_power(sc);
-#endif
-		break;
-	}
-	return (0);
-}
-#endif
 
 static void
 rge_intr_msi(void *arg)
@@ -959,29 +934,24 @@ rge_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 	case SIOCSIFFLAGS:
 		RGE_LOCK(sc);
 		if ((if_getflags(ifp) & IFF_UP) != 0) {
-			if ((if_getdrvflags(ifp) & IFF_DRV_RUNNING) == 0) {
-				/*
-				 * TODO: handle promisc/iffmulti changing
-				 * without reprogramming everything.
-				 */
-				rge_init_locked(sc);
-			} else {
-				/* Reinit promisc/multi just in case */
-				rge_iff_locked(sc);
-			}
-		} else {
 			if ((if_getdrvflags(ifp) & IFF_DRV_RUNNING) != 0) {
+				if (((if_getflags(ifp) ^ sc->rge_if_flags)
+				    & (IFF_PROMISC | IFF_ALLMULTI)) != 0)
+					rge_iff_locked(sc);
+			} else
+				rge_init_locked(sc);
+		} else {
+			if ((if_getdrvflags(ifp) & IFF_DRV_RUNNING) != 0)
 				rge_stop_locked(sc);
-			}
 		}
+		sc->rge_if_flags = if_getflags(ifp);
 		RGE_UNLOCK(sc);
 		break;
 	case SIOCADDMULTI:
 	case SIOCDELMULTI:
 		RGE_LOCK(sc);
-		if ((if_getflags(ifp) & IFF_DRV_RUNNING) != 0) {
+		if ((if_getflags(ifp) & IFF_DRV_RUNNING) != 0)
 			rge_iff_locked(sc);
-		}
 		RGE_UNLOCK(sc);
 		break;
 	case SIOCGIFMEDIA:
@@ -1019,7 +989,9 @@ rge_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 				reinit = 1;
 			}
 
-			/* TODO: WOL */
+			if ((mask & IFCAP_WOL_MAGIC) != 0 &&
+			    (if_getcapabilities(ifp) & IFCAP_WOL_MAGIC) != 0)
+				if_togglecapenable(ifp, IFCAP_WOL_MAGIC);
 
 			if ((mask & IFCAP_RXCSUM) != 0 &&
 			    (if_getcapabilities(ifp) & IFCAP_RXCSUM) != 0) {
@@ -2104,9 +2076,10 @@ rge_rxeof(struct rge_queues *q, struct mbufq *mq)
 	uint32_t rxstat, extsts;
 	int i, mlen, rx = 0;
 	int cons, prod;
-	int maxpkt = 16; /* XXX TODO: make this a tunable */
+	int maxpkt;
 	bool check_hwcsum;
 
+	maxpkt = sc->sc_rx_process_limit;
 	check_hwcsum = ((if_getcapenable(sc->sc_ifp) & IFCAP_RXCSUM) != 0);
 
 	RGE_ASSERT_LOCKED(sc);
@@ -2624,6 +2597,22 @@ rge_link_state(struct rge_softc *sc)
 	}
 }
 
+static void
+rge_setwol(struct rge_softc *sc)
+{
+	if_t ifp = sc->sc_ifp;
+	int enable;
+
+	mtx_assert(&sc->sc_mtx, MA_OWNED);
+
+	if (!pci_has_pm(sc->sc_dev))
+		return;
+
+	enable = (if_getcapenable(ifp) & IFCAP_WOL_MAGIC) != 0;
+
+	rge_wol_config(sc, enable);
+}
+
 /**
  * @brief Suspend
  */
@@ -2634,7 +2623,7 @@ rge_suspend(device_t dev)
 
 	RGE_LOCK(sc);
 	rge_stop_locked(sc);
-	/* TODO: wake on lan */
+	rge_setwol(sc);
 	sc->sc_suspended = true;
 	RGE_UNLOCK(sc);
 
@@ -2650,7 +2639,6 @@ rge_resume(device_t dev)
 	struct rge_softc *sc = device_get_softc(dev);
 
 	RGE_LOCK(sc);
-	/* TODO: wake on lan */
 
 	/* reinit if required */
 	if (if_getflags(sc->sc_ifp) & IFF_UP)
@@ -2673,6 +2661,7 @@ rge_shutdown(device_t dev)
 
 	RGE_LOCK(sc);
 	rge_stop_locked(sc);
+	rge_setwol(sc);
 	RGE_UNLOCK(sc);
 
 	return (0);

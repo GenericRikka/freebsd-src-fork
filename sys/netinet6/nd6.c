@@ -33,7 +33,6 @@
 
 #include "opt_inet.h"
 #include "opt_inet6.h"
-#include "opt_route.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -513,6 +512,14 @@ nd6_options(union nd_opts *ndopts)
 			}
 			ndopts->nd_opts_pi_end =
 				(struct nd_opt_prefix_info *)nd_opt;
+			break;
+		case ND_OPT_ROUTE_INFO:
+			if (ndopts->nd_opt_array[nd_opt->nd_opt_type] == 0) {
+				ndopts->nd_opt_array[nd_opt->nd_opt_type]
+					= nd_opt;
+			}
+			ndopts->nd_opts_rti_end =
+				(struct nd_opt_route_info *)nd_opt;
 			break;
 		/* What about ND_OPT_ROUTE_INFO? RFC 4191 */
 		case ND_OPT_RDNSS:	/* RFC 6106 */
@@ -1637,13 +1644,10 @@ check_release_defrouter(const struct rib_cmd_info *rc, void *_cbdata)
 void
 nd6_subscription_cb(struct rib_head *rnh, struct rib_cmd_info *rc, void *arg)
 {
-#ifdef ROUTE_MPATH
+
 	rib_decompose_notification(rc, check_release_defrouter, NULL);
 	if (rc->rc_cmd == RTM_DELETE && !NH_IS_NHGRP(rc->rc_nh_old))
 		check_release_defrouter(rc, NULL);
-#else
-	check_release_defrouter(rc, NULL);
-#endif
 }
 
 int

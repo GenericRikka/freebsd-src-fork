@@ -649,6 +649,7 @@ contrib/zstd/lib/compress/zstd_compress.c	optional zstdio compile-with ${ZSTD_C}
 contrib/zstd/lib/compress/zstd_compress_literals.c	optional zstdio compile-with ${ZSTD_C}
 contrib/zstd/lib/compress/zstd_compress_sequences.c	optional zstdio compile-with ${ZSTD_C}
 contrib/zstd/lib/compress/zstd_compress_superblock.c	optional zstdio compile-with "${ZSTD_C} ${NO_WUNUSED_BUT_SET_VARIABLE}"
+contrib/zstd/lib/compress/zstd_preSplit.c	optional zstdio compile-with ${ZSTD_C}
 contrib/zstd/lib/compress/fse_compress.c	optional zstdio compile-with ${ZSTD_C}
 contrib/zstd/lib/compress/hist.c		optional zstdio compile-with ${ZSTD_C}
 contrib/zstd/lib/compress/huf_compress.c	optional zstdio compile-with ${ZSTD_C}
@@ -1774,6 +1775,7 @@ dev/gpio/gpio_if.m		optional gpio
 dev/gpio/gpiobus_if.m		optional gpio
 dev/gpio/gpiopps.c		optional gpiopps fdt
 dev/gpio/ofw_gpiobus.c		optional fdt gpio
+dev/hid/appleir.c		optional appleir
 dev/hid/bcm5974.c		optional bcm5974
 dev/hid/hconf.c			optional hconf
 dev/hid/hcons.c			optional hcons
@@ -2298,6 +2300,10 @@ dev/ixgbe/if_ix.c		optional ix inet \
 	compile-with "${NORMAL_C} -I$S/dev/ixgbe -DSMP"
 dev/ixgbe/if_ixv.c		optional ixv inet \
 	compile-with "${NORMAL_C} -I$S/dev/ixgbe -DSMP"
+dev/ixgbe/if_ix_mdio.c		optional ix inet mdio \
+	compile-with "${NORMAL_C} -I$S/dev/ixgbe"
+dev/ixgbe/if_ix_mdio_hw.c	optional ix inet mdio \
+	compile-with "${NORMAL_C} -I$S/dev/ixgbe"
 dev/ixgbe/if_bypass.c		optional ix inet \
 	compile-with "${NORMAL_C} -I$S/dev/ixgbe"
 dev/ixgbe/if_fdir.c		optional ix inet | ixv inet \
@@ -2313,6 +2319,8 @@ dev/ixgbe/ixgbe_phy.c		optional ix inet | ixv inet \
 dev/ixgbe/ixgbe_api.c		optional ix inet | ixv inet \
 	compile-with "${NORMAL_C} -I$S/dev/ixgbe"
 dev/ixgbe/ixgbe_common.c	optional ix inet | ixv inet \
+	compile-with "${NORMAL_C} -I$S/dev/ixgbe"
+dev/ixgbe/ixgbe_fw_logging.c	optional ix inet | ixv inet \
 	compile-with "${NORMAL_C} -I$S/dev/ixgbe"
 dev/ixgbe/ixgbe_mbx.c		optional ix inet | ixv inet \
 	compile-with "${NORMAL_C} -I$S/dev/ixgbe"
@@ -3209,6 +3217,7 @@ dev/sound/midi/mpu401.c		optional sound
 dev/sound/midi/mpu_if.m		optional sound
 dev/sound/midi/mpufoi_if.m	optional sound
 dev/sound/sndstat.c		optional sound
+dev/sound/dummy.c		optional snd_dummy sound
 dev/spibus/acpi_spibus.c	optional acpi spibus
 dev/spibus/ofw_spibus.c		optional fdt spibus
 dev/spibus/spibus.c		optional spibus				\
@@ -3284,10 +3293,11 @@ dev/uart/uart_tty.c		optional uart
 # Universal Flash Storage Host Controller Interface drivers
 #
 dev/ufshci/ufshci.c		optional ufshci
+dev/ufshci/ufshci_acpi.c	optional ufshci acpi
 dev/ufshci/ufshci_ctrlr.c	optional ufshci
 dev/ufshci/ufshci_ctrlr_cmd.c	optional ufshci
 dev/ufshci/ufshci_dev.c		optional ufshci
-dev/ufshci/ufshci_pci.c		optional ufshci
+dev/ufshci/ufshci_pci.c		optional ufshci pci
 dev/ufshci/ufshci_req_queue.c	optional ufshci
 dev/ufshci/ufshci_req_sdb.c	optional ufshci
 dev/ufshci/ufshci_sim.c		optional ufshci
@@ -4233,6 +4243,7 @@ net/if_stf.c			optional stf inet inet6
 net/if_tuntap.c			optional tuntap
 net/if_vlan.c			optional vlan
 net/if_vxlan.c			optional vxlan inet | vxlan inet6
+net/if_geneve.c			optional geneve inet | geneve inet6
 net/ifdi_if.m			optional ether pci iflib
 net/iflib.c			optional ether pci iflib
 net/mp_ring.c			optional ether iflib
@@ -4244,8 +4255,8 @@ net/debugnet_inet.c		optional inet debugnet
 net/pfil.c			optional ether | inet
 net/radix.c			standard
 net/route.c			standard
-net/route/nhgrp.c		optional route_mpath
-net/route/nhgrp_ctl.c		optional route_mpath
+net/route/nhgrp.c		standard
+net/route/nhgrp_ctl.c		standard
 net/route/nhop.c		standard
 net/route/nhop_ctl.c		standard
 net/route/nhop_utils.c		standard
@@ -4261,7 +4272,7 @@ net/route/route_temporal.c	standard
 net/rss_config.c		standard
 net/rtsock.c			standard
 net/slcompress.c		optional netgraph_vjc
-net/toeplitz.c			optional inet | inet6 | route_mpath
+net/toeplitz.c			standard
 net/vnet.c			optional vimage
 net80211/ieee80211.c		optional wlan
 net80211/ieee80211_acl.c	optional wlan wlan_acl

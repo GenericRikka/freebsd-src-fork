@@ -14750,8 +14750,8 @@ rack_init(struct tcpcb *tp, void **ptr)
 	 */
 	rack_convert_rtts(tp);
 	rack_log_hystart_event(rack, rack->r_ctl.roundends, 20);
-	if ((tptoinpcb(tp)->inp_flags & INP_DROPPED) == 0) {
-		/* We do not start any timers on DROPPED connections */
+	if ((tp->t_flags & TF_DISCONNECTED) == 0) {
+		/* We do not start any timers on disconnected connections */
 		if (tp->t_fb->tfb_chg_query == NULL) {
 			rack_start_hpts_timer(rack, tp, tcp_get_usecs(NULL), 0, 0, 0);
 		} else {
@@ -22106,10 +22106,8 @@ out:
 		 * Now for special SYN/FIN handling.
 		 */
 		if (flags & (TH_SYN | TH_FIN)) {
-			if ((flags & TH_SYN) &&
-			    ((tp->t_flags & TF_SENTSYN) == 0)) {
+			if ((flags & TH_SYN) != 0 && tp->snd_max == tp->iss) {
 				tp->snd_max++;
-				tp->t_flags |= TF_SENTSYN;
 			}
 			if ((flags & TH_FIN) &&
 			    ((tp->t_flags & TF_SENTFIN) == 0)) {

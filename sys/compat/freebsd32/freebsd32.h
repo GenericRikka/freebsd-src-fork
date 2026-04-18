@@ -394,7 +394,7 @@ struct kinfo_proc32 {
 	char	ki_moretdname[MAXCOMLEN-TDNAMLEN+1];
 	char	ki_sparestrings[46];
 	pid_t	ki_reaper;
-	int	ki_reapsubtree;
+	pid_t	ki_reapsubtree;
 	int	ki_spareints[KI_NSPARE_INT];
 	freebsd32_uint64_t ki_tdev;
 	int	ki_oncpu;

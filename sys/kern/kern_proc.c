@@ -1235,7 +1235,10 @@ fill_kinfo_proc_pgrp(struct proc *p, struct kinfo_proc *kp)
 		kp->ki_tdev = NODEV;
 		kp->ki_tdev_freebsd11 = kp->ki_tdev; /* truncate */
 	}
-	kp->ki_reaper = p->p_reaper->p_pid;
+	if (p->p_reaper != NULL)
+		kp->ki_reaper = p->p_reaper->p_pid;
+	else
+		kp->ki_reaper = NO_PID;
 	kp->ki_reapsubtree = p->p_reapsubtree;
 }
 
@@ -3636,3 +3639,4 @@ SYSCTL_PROC(_debug, OID_AUTO, stop_all_proc, CTLTYPE_INT | CTLFLAG_RW |
     sysctl_debug_stop_all_proc, "I",
     "");
 #endif
+

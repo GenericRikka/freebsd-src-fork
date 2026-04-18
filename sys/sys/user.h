@@ -188,7 +188,7 @@ struct kinfo_proc {
 	 */
 	char	ki_sparestrings[46];	/* spare string space */
 	pid_t	ki_reaper;		/* pid of reaper process */
-	int	ki_reapsubtree;		/* reaper subtree id */
+	pid_t	ki_reapsubtree;		/* reaper subtree id */
 	int	ki_spareints[KI_NSPARE_INT];	/* spare room for growth */
 	uint64_t ki_tdev;		/* controlling tty dev */
 	int	ki_oncpu;		/* Which cpu we are on */
